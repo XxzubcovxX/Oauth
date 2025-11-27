@@ -1,28 +1,14 @@
-// api/callback.js
 import https from 'https';
 
 export default function handler(req, res) {
   const { code } = req.query;
-  
-  // Pegamos as senhas do ambiente da Vercel
   const client_id = process.env.OAUTH_CLIENT_ID;
   const client_secret = process.env.OAUTH_CLIENT_SECRET;
 
-  if (!code) {
-    return res.status(400).send("Erro: Nenhum código recebido do GitHub.");
-  }
-
-  if (!client_id || !client_secret) {
-    return res.status(500).send("Erro: Variáveis de ambiente (CLIENT_ID/SECRET) não configuradas na Vercel.");
-  }
-
-  // Prepara os dados para enviar ao GitHub
-  const data = JSON.stringify({
-    client_id,
-    client_secret,
-    code
-  });
-
+  if (!code) return res.status(400).send("Erro: Sem código");
+  
+  const data = JSON.stringify({ client_id, client_secret, code });
+  
   const options = {
     hostname: 'github.com',
     port: 443,
@@ -36,45 +22,59 @@ export default function handler(req, res) {
     }
   };
 
-  // Faz a requisição manual (sem usar fetch para evitar incompatibilidade)
   const request = https.request(options, (response) => {
     let body = '';
-
-    response.on('data', (chunk) => {
-      body += chunk;
-    });
-
+    response.on('data', (chunk) => body += chunk);
     response.on('end', () => {
       try {
         const parsed = JSON.parse(body);
-
-        // Se o GitHub retornou erro (ex: senha errada)
+        
         if (parsed.error) {
-          return res.status(400).send(`Erro do GitHub: ${parsed.error_description || parsed.error}`);
+          return res.status(400).send(`Erro GitHub: ${parsed.error_description}`);
         }
 
         const token = parsed.access_token;
-        const provider = 'github';
+        const provider = 'github'; // Tem que ser minúsculo para bater com o config.yml
 
-        // Script que envia o token para o CMS e fecha a janela
+        // MODO DEBUG: Não fecha a janela e mostra o token
         const html = `
           <html>
-          <body>
-            <p>Autenticando...</p>
+          <body style="font-family: sans-serif; text-align: center; padding: 20px;">
+            <h1 style="color: green;">SUCESSO! Token Gerado</h1>
+            <p>O GitHub autorizou e gerou o token abaixo:</p>
+            <textarea style="width: 100%; height: 100px;">${token}</textarea>
+            
+            <hr>
+            <h3>Tentando enviar para o CMS...</h3>
+            <button onclick="enviarMensagem()">Tentar Enviar Novamente</button>
+            <p id="status">Enviando automaticamente...</p>
+
             <script>
-              const message = {
-                token: "${token}",
-                provider: "${provider}"
-              };
+              const message = { token: "${token}", provider: "${provider}" };
+              const target = window.opener; // Quem abriu a janela (o CMS)
               
-              // Tenta enviar para a janela pai (o CMS)
-              window.opener.postMessage(
-                "authorization:${provider}:success:" + JSON.stringify(message),
-                "*"
-              );
+              function enviarMensagem() {
+                if (!target) {
+                   document.getElementById('status').innerText = "ERRO: Janela do CMS não encontrada (window.opener null).";
+                   return;
+                }
+                
+                // Envia a mensagem no formato que o Decap espera
+                // Formato: authorization:github:success:{...}
+                const msgString = "authorization:${provider}:success:" + JSON.stringify(message);
+                
+                // Envia para qualquer origem (*) para evitar bloqueio de CORS no teste
+                target.postMessage(msgString, "*");
+                
+                document.getElementById('status').innerText = "Mensagem enviada! Verifique o console da outra aba.";
+                console.log("Mensagem enviada:", msgString);
+              }
+
+              // Tenta enviar assim que carrega
+              setTimeout(enviarMensagem, 500);
               
-              // Fecha esta janela popup
-              window.close();
+              // COMENTEI O FECHAMENTO PARA VOCÊ VER
+              // window.close(); 
             </script>
           </body>
           </html>
@@ -84,13 +84,9 @@ export default function handler(req, res) {
         res.status(200).send(html);
 
       } catch (e) {
-        res.status(500).send("Erro ao processar resposta do GitHub: " + e.message);
+        res.status(500).send("Erro JSON: " + e.message);
       }
     });
-  });
-
-  request.on('error', (e) => {
-    res.status(500).send("Erro na conexão com GitHub: " + e.message);
   });
 
   request.write(data);
