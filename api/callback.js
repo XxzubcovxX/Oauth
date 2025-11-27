@@ -25,6 +25,7 @@ export default function handler(req, res) {
   const request = https.request(options, (response) => {
     let body = '';
     response.on('data', (chunk) => body += chunk);
+    
     response.on('end', () => {
       try {
         const parsed = JSON.parse(body);
@@ -33,55 +34,35 @@ export default function handler(req, res) {
           return res.status(400).send(`Erro GitHub: ${parsed.error_description}`);
         }
 
-        const token = parsed.access_token;
-        const provider = 'github'; // Tem que ser minúsculo para bater com o config.yml
+        const content = {
+          token: parsed.access_token,
+          provider: 'github'
+        };
 
-        // MODO DEBUG: Não fecha a janela e mostra o token
-        const html = `
-          <html>
-          <body style="font-family: sans-serif; text-align: center; padding: 20px;">
-            <h1 style="color: green;">SUCESSO! Token Gerado</h1>
-            <p>O GitHub autorizou e gerou o token abaixo:</p>
-            <textarea style="width: 100%; height: 100px;">${token}</textarea>
-            
-            <hr>
-            <h3>Tentando enviar para o CMS...</h3>
-            <button onclick="enviarMensagem()">Tentar Enviar Novamente</button>
-            <p id="status">Enviando automaticamente...</p>
-
-            <script>
-              const message = { token: "${token}", provider: "${provider}" };
-              const target = window.opener; // Quem abriu a janela (o CMS)
-              
-              function enviarMensagem() {
-                if (!target) {
-                   document.getElementById('status').innerText = "ERRO: Janela do CMS não encontrada (window.opener null).";
-                   return;
-                }
+        // Este script roda no navegador, envia o token e fecha a janela
+        const script = `
+          <script>
+            (function() {
+              function receiveMessage(e) {
+                console.log("Enviando token para o CMS...");
                 
-                // Envia a mensagem no formato que o Decap espera
-                // Formato: authorization:github:success:{...}
-                const msgString = "authorization:${provider}:success:" + JSON.stringify(message);
+                // Envia a mensagem no formato exato que o Decap CMS espera
+                // authorization:github:success:{json...}
+                window.opener.postMessage(
+                  'authorization:github:success:${JSON.stringify(content)}',
+                  '*' // Envia para qualquer origem (seguro neste contexto de popup)
+                );
                 
-                // Envia para qualquer origem (*) para evitar bloqueio de CORS no teste
-                target.postMessage(msgString, "*");
-                
-                document.getElementById('status').innerText = "Mensagem enviada! Verifique o console da outra aba.";
-                console.log("Mensagem enviada:", msgString);
+                // Fecha a janela após enviar
+                window.close();
               }
-
-              // Tenta enviar assim que carrega
-              setTimeout(enviarMensagem, 500);
-              
-              // COMENTEI O FECHAMENTO PARA VOCÊ VER
-              // window.close(); 
-            </script>
-          </body>
-          </html>
+              receiveMessage();
+            })();
+          </script>
         `;
 
         res.setHeader('Content-Type', 'text/html');
-        res.status(200).send(html);
+        res.status(200).send(script);
 
       } catch (e) {
         res.status(500).send("Erro JSON: " + e.message);
