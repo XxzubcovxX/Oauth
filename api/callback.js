@@ -1,5 +1,7 @@
 // api/callback.js
-export default async function handler(req, res) {
+import https from 'https';
+
+export default function handler(req, res) {
   const { code } = req.query;
   
   // Pegamos as senhas do ambiente da Vercel
@@ -7,53 +9,90 @@ export default async function handler(req, res) {
   const client_secret = process.env.OAUTH_CLIENT_SECRET;
 
   if (!code) {
-    return res.status(400).send("No code provided");
+    return res.status(400).send("Erro: Nenhum código recebido do GitHub.");
   }
 
-  try {
-    // 1. Troca o 'code' pelo 'access_token' no GitHub
-    const response = await fetch('https://github.com/login/oauth/access_token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({
-        client_id,
-        client_secret,
-        code
-      })
+  if (!client_id || !client_secret) {
+    return res.status(500).send("Erro: Variáveis de ambiente (CLIENT_ID/SECRET) não configuradas na Vercel.");
+  }
+
+  // Prepara os dados para enviar ao GitHub
+  const data = JSON.stringify({
+    client_id,
+    client_secret,
+    code
+  });
+
+  const options = {
+    hostname: 'github.com',
+    port: 443,
+    path: '/login/oauth/access_token',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Content-Length': data.length,
+      'User-Agent': 'Node-Serverless'
+    }
+  };
+
+  // Faz a requisição manual (sem usar fetch para evitar incompatibilidade)
+  const request = https.request(options, (response) => {
+    let body = '';
+
+    response.on('data', (chunk) => {
+      body += chunk;
     });
 
-    const data = await response.json();
-    const token = data.access_token;
+    response.on('end', () => {
+      try {
+        const parsed = JSON.parse(body);
 
-    // 2. Monta o script que envia o token de volta para o Decap CMS
-    const html = `
-      <html>
-        <body>
-          <script>
-            const receiveMessage = (message) => {
+        // Se o GitHub retornou erro (ex: senha errada)
+        if (parsed.error) {
+          return res.status(400).send(`Erro do GitHub: ${parsed.error_description || parsed.error}`);
+        }
+
+        const token = parsed.access_token;
+        const provider = 'github';
+
+        // Script que envia o token para o CMS e fecha a janela
+        const html = `
+          <html>
+          <body>
+            <p>Autenticando...</p>
+            <script>
+              const message = {
+                token: "${token}",
+                provider: "${provider}"
+              };
+              
+              // Tenta enviar para a janela pai (o CMS)
               window.opener.postMessage(
-                'authorization:github:success:${JSON.stringify({ token: token, provider: 'github' })}',
-                message.origin
+                "authorization:${provider}:success:" + JSON.stringify(message),
+                "*"
               );
-              window.removeEventListener("message", receiveMessage, false);
-            }
-            window.addEventListener("message", receiveMessage, false);
-            
-            // Envia mensagem para o CMS dizendo que logou
-            window.opener.postMessage("authorizing:github", "*");
-          </script>
-        </body>
-      </html>
-    `;
+              
+              // Fecha esta janela popup
+              window.close();
+            </script>
+          </body>
+          </html>
+        `;
 
-    res.setHeader('Content-Type', 'text/html');
-    res.send(html);
+        res.setHeader('Content-Type', 'text/html');
+        res.status(200).send(html);
 
-  } catch (error) {
-    console.error(error);
-    res.status(500).send("Erro na autenticação: " + error.message);
-  }
+      } catch (e) {
+        res.status(500).send("Erro ao processar resposta do GitHub: " + e.message);
+      }
+    });
+  });
+
+  request.on('error', (e) => {
+    res.status(500).send("Erro na conexão com GitHub: " + e.message);
+  });
+
+  request.write(data);
+  request.end();
 }
